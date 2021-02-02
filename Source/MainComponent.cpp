@@ -3,47 +3,47 @@
 //==============================================================================
 MainComponent::MainComponent()
 {
-    
-    juce::AudioFormatManager aman;
-    aman.registerBasicFormats();
-    juce::StringArray testfiles =
+    int numSlots = 8;
+    playBuffers.resize(numSlots);
+    playPositions.resize(numSlots);
+    playing.resize(numSlots,false);
+    playVolumes.resize(numSlots, 1.0f);
+    for (size_t i = 0; i < numSlots; ++i)
     {
-        "C:\\MusicAudio\\sourcesamples\\count.wav",
-        "C:\\MusicAudio\\sourcesamples\\sheila.wav"
-    };
-    playBuffers.resize(testfiles.size());
-    playPositions.resize(testfiles.size());
-    playing.resize(testfiles.size(),false);
-    for (size_t i = 0; i < testfiles.size(); ++i)
-    {
-        juce::File f(testfiles[i]);
-        if (loadFileToSlot(i, f))
+        auto button = std::make_unique<juce::ToggleButton>();
+        button->setButtonText("PLAY ");
+        addAndMakeVisible(button.get());
+        button->setBounds(1, 1 + i * 25, 200, 24);
+        button->onClick = [this, i]()
         {
-            auto button = std::make_unique<juce::ToggleButton>();
-            button->setButtonText("PLAY " + f.getFileName());
-            addAndMakeVisible(button.get());
-            button->setBounds(1, 1 + i * 25, 200, 24);
-            button->onClick = [this, i]()
+            playing[i] = playButtons[i]->getToggleState();
+        };
+        playButtons.push_back(std::move(button));
+        auto loadbutton = std::make_unique<juce::TextButton>();
+        loadbutton->setButtonText("Load...");
+        addAndMakeVisible(loadbutton.get());
+        loadbutton->setBounds(205, 1 + i * 25, 100, 24);
+        loadbutton->onClick = [this, i]()
+        {
+            auto f = browseForAudioFile();
+            if (f != juce::File())
             {
-                playing[i] = playButtons[i]->getToggleState();
-            };
-            playButtons.push_back(std::move(button));
-            auto loadbutton = std::make_unique<juce::TextButton>();
-            loadbutton->setButtonText("Load...");
-            addAndMakeVisible(loadbutton.get());
-            loadbutton->setBounds(205, 1 + i * 25, 100, 24);
-            loadbutton->onClick = [this, i]()
-            {
-                auto f = browseForAudioFile();
-                if (f != juce::File())
-                {
-                    if (loadFileToSlot(i, f))
-                        playButtons[i]->setButtonText(f.getFileName());
-                }
+                if (loadFileToSlot(i, f))
+                    playButtons[i]->setButtonText(f.getFileName());
+            }
                     
-            };
-            loadButtons.push_back(std::move(loadbutton));
-        }
+        };
+        loadButtons.push_back(std::move(loadbutton));
+        auto volslid = std::make_unique<juce::Slider>();
+        volslid->setRange(-48.0f, 0.0f);
+        volslid->setValue(0.0f, juce::dontSendNotification);
+        addAndMakeVisible(volslid.get());
+        volslid->onValueChange = [this, i]()
+        {
+            playVolumes[i] = juce::Decibels::decibelsToGain(volumeSliders[i]->getValue());
+        };
+        volslid->setBounds(305, 1 + i * 25, 150, 24);
+        volumeSliders.push_back(std::move(volslid));
     }
     // Some platforms require permissions to open input channels so request that here
     if (juce::RuntimePermissions::isRequired (juce::RuntimePermissions::recordAudio)
@@ -114,19 +114,23 @@ void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRat
 void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
 {
     juce::SpinLock::ScopedLockType locker(playLock);
+    // because this is mixing into the destination buffer, it must first be made silent/cleared
     bufferToFill.clearActiveBufferRegion();
     for (size_t i = 0; i < playBuffers.size(); ++i)
     {
-        if (playing[i])
+        if (playing[i] && playBuffers[i].getNumSamples()>1)
         {
             for (int j = 0; j < bufferToFill.numSamples; ++j)
             {
                 float s = playBuffers[i].getSample(0, playPositions[i]);
+                // apply play volume. note that this doesn't implement smoothing, so there can be crackles when adjusting the volume
+                s *= playVolumes[i];
                 // copy mono source samples to both output channels
                 for (int chan = 0; chan < 2; ++chan)
                 {
                     bufferToFill.buffer->addSample(chan, bufferToFill.startSample + j, s);
                 }
+                // increment source buffer play position and handle looping
                 ++playPositions[i];
                 if (playPositions[i] >= playBuffers[i].getNumSamples())
                     playPositions[i] = 0;
@@ -137,10 +141,7 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
 
 void MainComponent::releaseResources()
 {
-    // This will be called when the audio device stops, or when it is being
-    // restarted due to a setting change.
-
-    // For more details, see the help for AudioProcessor::releaseResources()
+    
 }
 
 //==============================================================================
